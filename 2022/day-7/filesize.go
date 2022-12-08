@@ -69,8 +69,6 @@ func Calculate(scanner *bufio.Scanner) *System {
 	return &system
 }
 
-//go:generate stringer -type=System
-
 type System struct {
 	baseDir    *dir
 	currentDir *dir
