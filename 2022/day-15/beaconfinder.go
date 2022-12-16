@@ -10,29 +10,68 @@ import (
 	"strings"
 )
 
-type Grid map[Pos]Item
+type Grid struct {
+	scans []Scan
+}
 
-func (g Grid) String() string {
-	xmin, xmax, ymin, ymax := math.MaxInt, math.MinInt, math.MaxInt, math.MinInt
-	for p := range g {
-		if p.x < xmin {
-			xmin = p.x
-		}
-		if p.x > xmax {
-			xmax = p.x
-		}
-		if p.y < ymin {
-			ymin = p.y
-		}
-		if p.y > ymax {
-			ymax = p.y
+type Scan struct {
+	sensor, nextBeacon Pos
+	dist               int
+}
+type gridLimits struct {
+	xmin, xmax, ymin, ymax int
+}
+
+func FindFreePos(g *Grid, upperLimit int) Pos {
+	for y := 0; y <= upperLimit; y++ {
+		for x := 0; x <= upperLimit; {
+			if skpbl := g.findSkippableX(Pos{x, y}); skpbl > 0 {
+				x = x + skpbl
+			} else {
+				return Pos{x, y}
+			}
 		}
 	}
+	panic("Found no unscanned positions in scan area")
+
+}
+
+func (g *Grid) findSkippableX(p Pos) int {
+	grid := *g
+	for _, s := range grid.scans {
+		if d := findDistance(s.sensor, p); d <= s.dist {
+			return s.sensor.x + s.dist - abs(p.y-s.sensor.y) - p.x + 1
+		}
+	}
+	return 0
+}
+
+func (g *Grid) findGridLimits() gridLimits {
+	xmin, xmax, ymin, ymax := math.MaxInt, math.MinInt, math.MaxInt, math.MinInt
+	for _, p := range g.scans {
+		if p.sensor.x-p.dist < xmin {
+			xmin = p.sensor.x - p.dist
+		}
+		if p.sensor.x+p.dist > xmax {
+			xmax = p.sensor.x + p.dist
+		}
+		if p.sensor.y-p.dist < ymin {
+			ymin = p.sensor.y - p.dist
+		}
+		if p.sensor.y+p.dist > ymax {
+			ymax = p.sensor.y + p.dist
+		}
+	}
+	return gridLimits{xmin, xmax, ymin, ymax}
+}
+
+func (g *Grid) String() string {
+	area := g.findGridLimits()
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("xmin: %d, xmax: %d, ymin: %d, ymax: %d\n", xmin, xmax, ymin, ymax))
-	for y := ymin; y <= ymax; y++ {
-		for x := xmin; x <= xmax; x++ {
-			switch g[Pos{x, y}] {
+	builder.WriteString(fmt.Sprintf("xmin: %d, xmax: %d, ymin: %d, ymax: %d\n", area.xmin, area.xmax, area.ymin, area.ymax))
+	for y := area.ymin; y <= area.ymax; y++ {
+		for x := area.xmin; x <= area.xmax; x++ {
+			switch g.GetItem(Pos{x, y}) {
 			case Unchecked:
 				builder.WriteRune('.')
 			case Sensor:
@@ -46,6 +85,26 @@ func (g Grid) String() string {
 		builder.WriteString("\n")
 	}
 	return builder.String()
+}
+
+func (g *Grid) GetItem(p Pos) Item {
+	grid := *g
+	current := Unchecked
+	for _, s := range grid.scans {
+		switch {
+		case p == s.sensor:
+			current = Sensor
+		case p == s.nextBeacon:
+			current = Beacon
+		case In(p, s.sensor, s.dist):
+			current = Scanned
+		}
+	}
+	return current
+}
+
+func In(sensor, p Pos, dist int) bool {
+	return findDistance(sensor, p) <= dist
 }
 
 type Pos struct {
@@ -63,55 +122,39 @@ const (
 
 var lineRegex, _ = regexp.Compile(`Sensor at x=(.?\d+), y=(.?\d+): closest beacon is at x=(.?\d+), y=(.?\d+)`)
 
-func LoadFromFile(fn string, row int) Grid {
+func LoadFromFile(fn string) Grid {
 	f, err := os.Open(fn)
 	if err != nil {
 		panic(err)
 	}
-	grid := make(Grid, 0)
+	grid := make([]Scan, 0)
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		addLineToGrid(&grid, scanner.Text(), row)
+		grid = append(grid, getScanFromLine(scanner.Text()))
 	}
-	return grid
+	return Grid{grid}
 }
 
 func BlockedPositionsInRow(g *Grid, y int) int {
-	grid := *g
+	area := g.findGridLimits()
 	rowContent := make([]Item, 0)
-	for p := range grid {
-		if p.y == y {
-			i := grid[p]
-			if i == Scanned {
-				rowContent = append(rowContent, i)
-			}
+	for x := area.xmin; x <= area.xmax; x++ {
+		if item := g.GetItem(Pos{x, y}); item == Scanned {
+			rowContent = append(rowContent, item)
 		}
 	}
 	return len(rowContent)
 }
 
-func addLineToGrid(gridPointer *Grid, line string, row int) *Grid {
-	regexGroups := lineRegex.FindStringSubmatch(line)
-	s, nb := Pos{asInt(regexGroups[1]), asInt(regexGroups[2])}, Pos{asInt(regexGroups[3]), asInt(regexGroups[4])}
-	AddToGrid(gridPointer, s, nb, row)
-	return gridPointer
+func NewScan(sensor, nextBeacon Pos) Scan {
+	dist := findDistance(sensor, nextBeacon)
+	return Scan{sensor, nextBeacon, dist}
 }
 
-func AddToGrid(gridPointer *Grid, s, nb Pos, row int) {
-	grid := *gridPointer
-	dtb := findDistance(s, nb)
-	grid[s] = Sensor
-	grid[nb] = Beacon
-
-	for x := -dtb; x <= dtb; x++ {
-		if abs(x)+abs(s.y-row) <= dtb {
-			currentPos := Pos{x + s.x, row}
-			if grid[currentPos] == Unchecked {
-				grid[currentPos] = Scanned
-			}
-		}
-	}
-
+func getScanFromLine(line string) Scan {
+	regexGroups := lineRegex.FindStringSubmatch(line)
+	s, nb := Pos{asInt(regexGroups[1]), asInt(regexGroups[2])}, Pos{asInt(regexGroups[3]), asInt(regexGroups[4])}
+	return NewScan(s, nb)
 }
 
 func findDistance(s, nb Pos) int {
