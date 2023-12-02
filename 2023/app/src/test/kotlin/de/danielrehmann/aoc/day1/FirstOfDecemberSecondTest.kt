@@ -1,4 +1,4 @@
-package de.danielrehmann.aoc
+package de.danielrehmann.aoc.day1
 
 import de.danielrehmann.aoc.Utils.Companion.readLinesFromFile
 import org.junit.jupiter.api.Test
